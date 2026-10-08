@@ -1,0 +1,51 @@
+services:
+
+  postgres:
+    image: postgres:16
+
+    container_name: serverwatch-postgres
+
+    environment:
+      POSTGRES_DB: serverwatch
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+  backend:
+    build:
+      context: ./backend
+
+    container_name: serverwatch-backend
+
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/serverwatch
+      SECRET_KEY: change-this-to-a-long-random-secret-key
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      - postgres
+
+
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: serverwatch-frontend
+
+    ports:
+      - "5173:80"
+
+    depends_on:
+      - backend
+
+
+volumes:
+  postgres_data:
