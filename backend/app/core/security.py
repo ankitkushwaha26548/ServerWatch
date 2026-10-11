@@ -13,7 +13,8 @@ load_dotenv()
 
 
 SECRET_KEY = os.getenv(
-    "SECRET_KEY"
+    "SECRET_KEY",
+    "change-this-to-a-long-random-secret-key"
 )
 
 ALGORITHM = "HS256"

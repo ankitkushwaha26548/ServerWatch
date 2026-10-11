@@ -17,55 +17,49 @@ function Dashboard() {
 
     useEffect(() => {
 
-        loadDashboard();
+        let refreshInProgress = false;
 
-    }, []);
-
-
-    const loadDashboard = async () => {
-
-        try {
-
-            const serverData = await getServers();
-
-            setServers(serverData);
-
-
-            const metricsData = {};
-
-
-            for (const server of serverData) {
-
-                const serverMetrics =
-                    await getServerMetrics(server.id);
-
-
-                if (serverMetrics.length > 0) {
-
-                    metricsData[server.id] =
-                        serverMetrics[0];
-
-                }
-
+        const loadDashboard = async () => {
+            if (refreshInProgress) {
+                return;
             }
 
+            refreshInProgress = true;
 
-            setMetrics(metricsData);
+            try {
+                const serverData = await getServers();
+                setServers(serverData);
 
-        } catch (error) {
+                const metricsData = {};
 
-            console.error(error);
+                for (const server of serverData) {
+                    const serverMetrics = await getServerMetrics(server.id);
 
-            setError(
-                "Unable to load dashboard data."
-            );
+                    if (serverMetrics.length > 0) {
+                        metricsData[server.id] = serverMetrics[0];
+                    }
+                }
 
-        } finally {
+                setMetrics(metricsData);
+                setError(null);
+            } catch (error) {
+                console.error(error);
+                setError("Unable to load dashboard data.");
+            } finally {
+                setLoading(false);
+                refreshInProgress = false;
+            }
+        };
 
-            setLoading(false);
+        void loadDashboard();
 
-        }
-    };
+        const refreshInterval = window.setInterval(() => {
+            void loadDashboard();
+        }, 5000);
+
+        return () => window.clearInterval(refreshInterval);
+
+    }, []);
 
 
     if (loading) {

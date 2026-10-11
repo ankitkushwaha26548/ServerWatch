@@ -20,7 +20,7 @@ from app.routes.logs import router as logs_router
 from app.routes.auth import router as auth_router
 
 from app.routes.deployments import router as deployments_router
-
+from app.routes import agent_auth
 
 Base.metadata.create_all(bind=engine)
 
@@ -47,9 +47,8 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173"
-    ],
+    allow_origins=["http://localhost:5173"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,6 +62,7 @@ app.include_router(alerts_router)
 app.include_router(logs_router)
 app.include_router(auth_router)
 app.include_router(deployments_router)
+app.include_router(agent_auth.router)
 
 
 @app.get("/")

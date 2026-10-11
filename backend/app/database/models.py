@@ -301,3 +301,18 @@ class Deployment(Base):
         default=datetime.utcnow,
         index=True
     )
+
+class ServerAgentCredential(Base):
+    __tablename__ = "server_agent_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_id = Column(
+        Integer,
+        ForeignKey("servers.id"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    token_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    

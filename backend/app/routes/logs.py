@@ -2,9 +2,9 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Query
+    Query,Header
 )
-
+from app.core.agent_security import verify_agent_token
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
@@ -31,9 +31,12 @@ router = APIRouter(
 )
 def create_log(
     log: LogCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token")
 ):
 
+    verify_agent_token(log.server_id, x_agent_token, db)
+    
     server = (
         db.query(Server)
         .filter(

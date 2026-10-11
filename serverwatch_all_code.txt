@@ -1,0 +1,4816 @@
+ServerWatch project source export
+Generated: 2026-10-09 20:40:05
+Local .env files and lockfiles are excluded. Hard-coded credential values in docker-compose.yml are redacted.
+
+================================================================================
+FILE: .github\workflows\ci-cd.yml
+================================================================================
+name: ServerWatch CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+
+permissions:
+  contents: read
+  packages: write
+
+
+jobs:
+
+  backend-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+
+      - name: Check backend imports
+        run: |
+          cd backend
+          python -m compileall app
+
+
+
+  frontend-build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm install
+
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+
+
+  docker-build:
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - backend-test
+      - frontend-build
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+
+      - name: Set image owner
+        run: |
+          echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            -t ghcr.io/$IMAGE_OWNER/serverwatch-backend:latest \
+            ./backend
+
+          docker push \
+            ghcr.io/$IMAGE_OWNER/serverwatch-backend:latest
+
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            -t ghcr.io/$IMAGE_OWNER/serverwatch-frontend:latest \
+            ./frontend
+
+          docker push \
+            ghcr.io/$IMAGE_OWNER/serverwatch-frontend:latest
+
+================================================================================
+FILE: agent\agent.py
+================================================================================
+from utils import bytes_to_mb
+
+from metrics import (
+    get_cpu_usage,
+    get_memory_usage,
+    get_disk_usage,
+    get_network_usage
+)
+
+from system_info import (
+    get_hostname,
+    get_operating_system,
+    get_os_version,
+    get_cpu_information
+)
+
+from uptime import (
+    get_uptime_seconds,
+    format_uptime
+)
+
+
+def collect_metrics():
+
+    network = get_network_usage()
+
+    uptime_seconds = get_uptime_seconds()
+
+    cpu_info = get_cpu_information()
+
+    return {
+        "hostname": get_hostname(),
+        "operating_system": get_operating_system(),
+        "os_version": get_os_version(),
+
+        "cpu_usage": get_cpu_usage(),
+
+        "memory_usage": get_memory_usage(),
+
+        "disk_usage": get_disk_usage(),
+
+        "network_sent_mb": bytes_to_mb(
+            network["bytes_sent"]
+        ),
+
+        "network_received_mb": bytes_to_mb(
+            network["bytes_received"]
+        ),
+
+        "physical_cores": cpu_info["physical_cores"],
+
+        "logical_cores": cpu_info["logical_cores"],
+
+        "uptime_seconds": uptime_seconds,
+
+        "uptime": format_uptime(uptime_seconds)
+    }
+
+
+if __name__ == "__main__":
+
+    data = collect_metrics()
+
+    print("\n================================")
+    print("       ServerWatch Agent")
+    print("================================")
+
+    for key, value in data.items():
+        print(f"{key}: {value}")
+
+    print("================================\n")
+
+================================================================================
+FILE: agent\agent_loop.py
+================================================================================
+import os
+import time
+
+from dotenv import load_dotenv
+
+from agent import collect_metrics
+from sender import SERVER_ID, send_metrics
+from logger import send_log
+
+
+load_dotenv()
+
+SERVER_ID = int(
+    os.getenv("SERVER_ID", "1")
+)
+
+
+INTERVAL = int(
+    os.getenv("MONITOR_INTERVAL", "5")
+)
+
+cycle_count = 0
+
+while True:
+
+    try:
+
+        data = collect_metrics()
+
+        if data["cpu_usage"] > 80:
+            send_log(
+                SERVER_ID,
+                "WARNING",
+                f"High CPU usage: {data['cpu_usage']}%"
+            )
+
+        if data["memory_usage"] > 80:
+            send_log(
+                SERVER_ID,
+                "WARNING",
+                f"High memory usage: {data['memory_usage']}%"
+            )
+
+        if data["disk_usage"] > 80:
+            send_log(
+                SERVER_ID,
+                "WARNING",
+                f"High disk usage: {data['disk_usage']}%"
+            )   
+
+            if data["disk_usage"] > 90:
+                send_log(
+                    SERVER_ID,
+                    "WARNING",
+                    f"High disk usage: {data['disk_usage']}%"
+                    )
+                
+        result = send_metrics(data)
+
+        print("\n================================")
+        print("ServerWatch Agent")
+        print("================================")
+
+        print(f"CPU: {data['cpu_usage']}%")
+        print(f"RAM: {data['memory_usage']}%")
+        print(f"Disk: {data['disk_usage']}%")
+
+        print(
+            f"Metrics sent successfully."
+            f" Metric ID: {result['id']}"
+        )
+
+        print("================================\n")
+
+    except Exception as error:
+
+        print("Failed to send metrics.")
+        print("Error:", error)
+
+        cycle_count += 1
+
+        if cycle_count %12 == 0:
+            send_log(
+                SERVER_ID,
+                "INFO",
+                "Metrics sent successfully"
+            )
+
+    time.sleep(INTERVAL)
+
+================================================================================
+FILE: agent\logger.py
+================================================================================
+import requests
+
+from sender import API_URL, AGENT_TOKEN
+
+
+def send_log(
+    server_id,
+    level,
+    message,
+    source="agent"
+):
+
+    payload = {
+        "server_id": server_id,
+        "level": level,
+        "message": message,
+        "source": source
+    }
+
+    try:
+
+        response = requests.post(
+        f"{API_URL}/logs/",
+        json=payload,
+        headers={"X-Agent-Token": AGENT_TOKEN},
+        timeout=5
+    )
+        
+        response.raise_for_status()
+
+        return response.json()
+
+    except requests.RequestException as error:
+
+        print(
+            "Failed to send log:",
+            error
+        )
+
+        return None
+
+================================================================================
+FILE: agent\metrics.py
+================================================================================
+import os
+import psutil
+
+
+def get_cpu_usage():
+    return psutil.cpu_percent(interval=1)
+
+
+def get_memory_usage():
+    memory = psutil.virtual_memory()
+    return memory.percent
+
+
+def get_disk_usage():
+    if os.name == "nt":
+        disk = psutil.disk_usage("C:\\")
+    else:
+        disk = psutil.disk_usage("/")
+
+    return disk.percent
+
+
+def get_network_usage():
+    network = psutil.net_io_counters()
+
+    return {
+        "bytes_sent": network.bytes_sent,
+        "bytes_received": network.bytes_recv
+    }
+
+================================================================================
+FILE: agent\requirements.txt
+================================================================================
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+psutil==7.2.2
+python-dotenv==1.2.4
+requests==2.34.2
+urllib3==2.8.0
+
+================================================================================
+FILE: agent\sender.py
+================================================================================
+import os
+import requests
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+AGENT_TOKEN = os.getenv("AGENT_TOKEN")
+
+SERVER_ID = int(os.getenv("SERVER_ID", "1"))
+
+
+def send_metrics(data):
+    if not AGENT_TOKEN:
+        raise ValueError(
+            "AGENT_TOKEN is missing. Check your agent .env file."
+        )
+
+    payload = {
+        "server_id": SERVER_ID,
+        "cpu_usage": data["cpu_usage"],
+        "memory_usage": data["memory_usage"],
+        "disk_usage": data["disk_usage"],
+        "network_sent_mb": data["network_sent_mb"],
+        "network_received_mb": data["network_received_mb"],
+        "uptime_seconds": data["uptime_seconds"],
+    }
+
+    response = requests.post(
+        f"{API_URL}/metrics/",
+        json=payload,
+        headers={"X-Agent-Token": AGENT_TOKEN},
+        timeout=5,
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+================================================================================
+FILE: agent\system_info.py
+================================================================================
+import psutil
+import platform 
+import socket
+
+
+def get_hostname():
+    return socket.gethostname()
+
+def get_operating_system():
+    return platform.system()
+
+def get_os_version():
+    return platform.version()
+
+def get_cpu_information():
+    return {
+        "physical_cores": psutil.cpu_count(logical=False),
+        "logical_cores": psutil.cpu_count(logical=True),
+    }
+
+================================================================================
+FILE: agent\uptime.py
+================================================================================
+import time
+import psutil
+
+
+def get_uptime_seconds():
+    boot_time = psutil.boot_time()
+    current_time = time.time()
+    return int(current_time - boot_time)
+
+def format_uptime(seconds):
+    days = seconds // 86400
+    seconds = seconds % 86400
+    hours = seconds // 3600
+    seconds = seconds % 3600
+    minutes = seconds // 60
+
+    return f"{days} days, {hours} hours, {minutes} minutes"
+
+================================================================================
+FILE: agent\utils.py
+================================================================================
+def bytes_to_mb(bytes_value):
+    return round(bytes_value / (1024 * 1024), 2)
+
+================================================================================
+FILE: backend\app\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\core\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\core\agent_security.py
+================================================================================
+import hashlib
+import hmac
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.database.models import ServerAgentCredential
+
+
+def verify_agent_token(
+    server_id: int,
+    token: str | None,
+    db: Session,
+):
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing agent token",
+        )
+
+    credential = db.query(ServerAgentCredential).filter(
+        ServerAgentCredential.server_id == server_id
+    ).first()
+
+    if not credential:
+        raise HTTPException(
+            status_code=401,
+            detail="Agent is not registered",
+        )
+
+    received_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    if not hmac.compare_digest(
+        received_hash,
+        credential.token_hash,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid agent token",
+        )
+
+================================================================================
+FILE: backend\app\core\config.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\core\dependencies.py
+================================================================================
+from fastapi import (
+    Depends,
+    HTTPException,
+    status
+)
+
+from fastapi.security import (
+    HTTPBearer,
+    HTTPAuthorizationCredentials
+)
+
+from jose import JWTError, jwt
+
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+
+from app.database.models import User
+
+from app.core.security import (
+    SECRET_KEY,
+    ALGORITHM
+)
+
+
+security = HTTPBearer()
+
+
+def get_current_user(
+    credentials:
+        HTTPAuthorizationCredentials =
+        Depends(security),
+    db: Session = Depends(get_db)
+):
+
+    token = credentials.credentials
+
+    try:
+
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        user_id = payload.get("sub")
+
+        if user_id is None:
+
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+    except JWTError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
+
+
+    user = (
+        db.query(User)
+        .filter(
+            User.id == int(user_id)
+        )
+        .first()
+    )
+
+
+    if not user:
+
+        raise HTTPException(
+            status_code=401,
+            detail="User not found"
+        )
+
+
+    if not user.is_active:
+
+        raise HTTPException(
+            status_code=403,
+            detail="User account is inactive"
+        )
+
+
+    return user
+
+================================================================================
+FILE: backend\app\core\security.py
+================================================================================
+import os
+
+from datetime import datetime, timedelta, timezone
+
+from dotenv import load_dotenv
+
+from jose import JWTError, jwt
+
+from passlib.context import CryptContext
+
+
+load_dotenv()
+
+
+SECRET_KEY = os.getenv(
+    "SECRET_KEY",
+    "change-this-to-a-long-random-secret-key"
+)
+
+ALGORITHM = "HS256"
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto"
+)
+
+
+def hash_password(password: str):
+
+    return pwd_context.hash(
+        password
+    )
+
+
+def verify_password(
+    plain_password: str,
+    hashed_password: str
+):
+
+    return pwd_context.verify(
+        plain_password,
+        hashed_password
+    )
+
+
+def create_access_token(
+    data: dict
+):
+
+    to_encode = data.copy()
+
+    expire = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+    )
+
+    to_encode.update(
+        {
+            "exp": expire
+        }
+    )
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return encoded_jwt
+
+================================================================================
+FILE: backend\app\database\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\database\connection.py
+================================================================================
+import os 
+
+from dotenv import load_dotenv
+from sqlalchemy import create_engine 
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+load_dotenv()
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/serverwatch"
+)
+
+engine = create_engine(DATABASE_URL)
+
+SessionLocal= sessionmaker(
+    autocommit=False,
+    autoflush=False, 
+    bind=engine
+)
+
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
+
+================================================================================
+FILE: backend\app\database\models.py
+================================================================================
+from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey, Boolean
+from datetime import datetime
+
+from .connection import Base
+
+
+class Server(Base):
+    __tablename__ = "servers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    hostname = Column(String, nullable=False)
+    ip_address = Column(String, nullable=False)
+    operating_system = Column(String, nullable=False)
+    status = Column(String, default="offline")
+    last_seen = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ServerMetric(Base):
+    __tablename__ = "server_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    server_id = Column(
+        Integer,
+        ForeignKey("servers.id"),
+        nullable=False,
+        index=True
+    )
+
+    cpu_usage = Column(Float, nullable=False)
+
+    memory_usage = Column(Float, nullable=False)
+
+    disk_usage = Column(Float, nullable=False)
+
+    network_sent_mb = Column(Float, nullable=False)
+
+    network_received_mb = Column(Float, nullable=False)
+
+    uptime_seconds = Column(Integer, nullable=False)
+
+    timestamp = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True
+    )
+
+class ApiEndpoint(Base):
+    __tablename__ = "api_endpoints"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    name = Column(
+        String,
+        nullable=False
+    )
+
+    url = Column(
+        String,
+        nullable=False
+    )
+
+    method = Column(
+        String,
+        default="GET"
+    )
+
+    status = Column(
+        String,
+        default="unknown"
+    )
+
+    last_status_code = Column(
+        Integer,
+        nullable=True
+    )
+
+    last_response_time = Column(
+        Float,
+        nullable=True
+    )
+
+    last_checked = Column(
+        DateTime,
+        nullable=True
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+
+class ApiCheck(Base):
+    __tablename__ = "api_checks"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    api_id = Column(
+        Integer,
+        ForeignKey("api_endpoints.id"),
+        nullable=False,
+        index=True
+    )
+
+    status_code = Column(
+        Integer,
+        nullable=True
+    )
+
+    response_time = Column(
+        Float,
+        nullable=True
+    )
+
+    status = Column(
+        String,
+        nullable=False
+    )
+
+    error_message = Column(
+        String,
+        nullable=True
+    )
+
+    checked_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True
+    )
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    api_id = Column(
+        Integer,
+        ForeignKey("api_endpoints.id"),
+        nullable=True,
+        index=True
+    )
+
+    alert_type = Column(
+        String,
+        nullable=False
+    )
+
+    message = Column(
+        String,
+        nullable=False
+    )
+
+    severity = Column(
+        String,
+        default="warning"
+    )
+
+    is_resolved = Column(
+        Boolean,
+        default=False
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True
+    )
+
+    resolved_at = Column(
+        DateTime,
+        nullable=True
+    )
+
+class ServerLog(Base):
+    __tablename__ = "server_logs"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    server_id = Column(
+        Integer,
+        ForeignKey("servers.id"),
+        nullable=False,
+        index=True
+    )
+
+    level = Column(
+        String,
+        nullable=False
+    )
+
+    message = Column(
+        String,
+        nullable=False
+    )
+
+    source = Column(
+        String,
+        default="agent"
+    )
+
+    timestamp = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True
+    )
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    username = Column(
+        String,
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    email = Column(
+        String,
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    hashed_password = Column(
+        String,
+        nullable=False
+    )
+
+    role = Column(
+        String,
+        default="USER",
+        nullable=False
+    )
+
+    is_active = Column(
+        Boolean,
+        default=True
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+class Deployment(Base):
+    __tablename__ = "deployments"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    version = Column(
+        String,
+        nullable=False
+    )
+
+    environment = Column(
+        String,
+        nullable=False
+    )
+
+    status = Column(
+        String,
+        nullable=False
+    )
+
+    commit_hash = Column(
+        String,
+        nullable=False
+    )
+
+    deployed_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True
+    )
+
+class ServerAgentCredential(Base):
+    __tablename__ = "server_agent_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_id = Column(
+        Integer,
+        ForeignKey("servers.id"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    token_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+================================================================================
+FILE: backend\app\main.py
+================================================================================
+import asyncio
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import WebSocket, WebSocketDisconnect
+
+from app.database.connection import Base, engine
+from app.database import models
+
+from app.routes.servers import router as server_router
+from app.routes.metrics import router as metrics_router
+from app.services.websocket import manager
+from app.routes.api_monitor import router as api_monitor_router
+
+
+from app.services.monitor_scheduler import monitoring_loop
+from app.routes.alerts import router as alerts_router
+from app.routes.logs import router as logs_router
+from app.routes.auth import router as auth_router
+
+from app.routes.deployments import router as deployments_router
+from app.routes import agent_auth
+
+Base.metadata.create_all(bind=engine)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    monitoring_task = asyncio.create_task(
+        monitoring_loop()
+    )
+
+    yield
+
+    monitoring_task.cancel()
+
+    
+app = FastAPI(
+    title="ServerWatch API",
+    description="Mini DevOps monitoring platform",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+app.include_router(server_router)
+app.include_router(metrics_router)
+app.include_router(api_monitor_router)
+app.include_router(alerts_router)
+app.include_router(logs_router)
+app.include_router(auth_router)
+app.include_router(deployments_router)
+app.include_router(agent_auth.router)
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "ServerWatch API is running"
+    }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+
+    await manager.connect(websocket)
+
+    try:
+
+        while True:
+
+            data = await websocket.receive_text()
+
+            await manager.broadcast(data)
+
+    except WebSocketDisconnect:
+
+        manager.disconnect(websocket)
+
+================================================================================
+FILE: backend\app\routes\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\routes\agent_auth.py
+================================================================================
+import hashlib
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+from app.database.models import Server, ServerAgentCredential
+from app.core.dependencies import get_current_user
+
+router = APIRouter(prefix="/servers", tags=["Agent Authentication"])
+
+
+@router.post("/{server_id}/agent-token")
+def generate_agent_token(
+    server_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    server = db.query(Server).filter(
+        Server.id == server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    credential = db.query(ServerAgentCredential).filter(
+        ServerAgentCredential.server_id == server_id
+    ).first()
+
+    if credential:
+        credential.token_hash = token_hash
+    else:
+        credential = ServerAgentCredential(
+            server_id=server_id,
+            token_hash=token_hash,
+        )
+        db.add(credential)
+
+    db.commit()
+
+    # The raw token is returned only now.
+    return {
+        "server_id": server_id,
+        "agent_token": token,
+        "message": "Save this token securely. It cannot be retrieved later.",
+    }
+
+================================================================================
+FILE: backend\app\routes\alerts.py
+================================================================================
+from fastapi import (
+    APIRouter,
+    Depends
+)
+
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+
+from app.database.models import Alert
+
+from app.schemas.alert import (
+    AlertResponse
+)
+
+from app.core.dependencies import get_current_user
+
+router = APIRouter(
+    prefix="/alerts",
+    tags=["Alerts"]
+)
+
+
+@router.get(
+    "/",
+    response_model=list[AlertResponse]
+)
+def get_alerts(
+    db: Session = Depends(get_db),
+    current_user = Depends(
+        get_current_user
+    )
+):
+
+    alerts = (
+        db.query(Alert)
+        .order_by(
+            Alert.created_at.desc()
+        )
+        .limit(100)
+        .all()
+    )
+
+    return alerts
+
+
+@router.get(
+    "/active",
+    response_model=list[AlertResponse]
+)
+def get_active_alerts(
+    db: Session = Depends(get_db),
+    current_user = Depends(
+        get_current_user
+    )
+):
+
+    alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.is_resolved == False
+        )
+        .order_by(
+            Alert.created_at.desc()
+        )
+        .all()
+    )
+
+    return alerts
+
+================================================================================
+FILE: backend\app\routes\api_monitor.py
+================================================================================
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException
+)
+
+from sqlalchemy.orm import Session
+
+from datetime import datetime
+
+from app.database.connection import get_db
+
+from app.database.models import (
+    ApiEndpoint,
+    ApiCheck
+)
+
+from app.schemas.api_monitor import (
+    ApiCreate,
+    ApiResponse,
+    ApiCheckResponse
+)
+
+from app.services.api_monitor import check_api
+from app.core.dependencies import get_current_user
+
+
+router = APIRouter(
+    prefix="/api-monitor",
+    tags=["API Monitoring"]
+)
+
+
+@router.post(
+    "/",
+    response_model=ApiResponse
+)
+def create_api(
+    api: ApiCreate,
+    db: Session = Depends(get_db)
+):
+
+    new_api = ApiEndpoint(
+        name=api.name,
+        url=api.url,
+        method=api.method.upper()
+    )
+
+    db.add(new_api)
+    db.commit()
+    db.refresh(new_api)
+
+    return new_api
+
+
+@router.get(
+    "/",
+    response_model=list[ApiResponse]
+)
+def get_apis(
+    db: Session = Depends(get_db),
+    current_user = Depends(
+        get_current_user
+    )
+):
+
+    apis = (
+        db.query(ApiEndpoint)
+        .order_by(ApiEndpoint.id.desc())
+        .all()
+    )
+
+    return apis
+
+
+@router.post(
+    "/{api_id}/check",
+    response_model=ApiCheckResponse
+)
+def check_monitored_api(
+    api_id: int,
+    db: Session = Depends(get_db)
+):
+
+    api = (
+        db.query(ApiEndpoint)
+        .filter(
+            ApiEndpoint.id == api_id
+        )
+        .first()
+    )
+
+    if not api:
+        raise HTTPException(
+            status_code=404,
+            detail="API endpoint not found"
+        )
+
+    result = check_api(api.url)
+
+    new_check = ApiCheck(
+        api_id=api.id,
+        status_code=result["status_code"],
+        response_time=result["response_time"],
+        status=result["status"],
+        error_message=result["error_message"]
+    )
+
+    db.add(new_check)
+
+    api.status = result["status"]
+    api.last_status_code = result["status_code"]
+    api.last_response_time = result["response_time"]
+    api.last_checked = datetime.utcnow()
+
+    db.commit()
+    db.refresh(new_check)
+
+    return new_check
+
+
+@router.get(
+    "/{api_id}/history",
+    response_model=list[ApiCheckResponse]
+)
+def get_api_history(
+    api_id: int,
+    db: Session = Depends(get_db)
+):
+
+    api = (
+        db.query(ApiEndpoint)
+        .filter(
+            ApiEndpoint.id == api_id
+        )
+        .first()
+    )
+
+    if not api:
+        raise HTTPException(
+            status_code=404,
+            detail="API endpoint not found"
+        )
+
+    checks = (
+        db.query(ApiCheck)
+        .filter(
+            ApiCheck.api_id == api_id
+        )
+        .order_by(
+            ApiCheck.checked_at.desc()
+        )
+        .limit(100)
+        .all()
+    )
+
+    return checks
+
+================================================================================
+FILE: backend\app\routes\auth.py
+================================================================================
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status
+)
+
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+
+from app.database.models import User
+
+from app.schemas.auth import (
+    UserCreate,
+    UserResponse,
+    TokenResponse,
+    LoginRequest
+)
+
+from app.core.security import (
+    hash_password,
+    verify_password,
+    create_access_token
+)
+
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"]
+)
+
+
+@router.post(
+    "/register",
+    response_model=UserResponse
+)
+def register(
+    user_data: UserCreate,
+    db: Session = Depends(get_db)
+):
+
+    existing_user = (
+        db.query(User)
+        .filter(
+            User.username ==
+            user_data.username
+        )
+        .first()
+    )
+
+    if existing_user:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Username already exists"
+        )
+
+
+    existing_email = (
+        db.query(User)
+        .filter(
+            User.email ==
+            user_data.email
+        )
+        .first()
+    )
+
+    if existing_email:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Email already exists"
+        )
+
+
+    new_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=hash_password(
+            user_data.password
+        ),
+        role="USER"
+    )
+
+
+    db.add(new_user)
+
+    db.commit()
+
+    db.refresh(new_user)
+
+    return new_user
+
+@router.post(
+    "/login",
+    response_model=TokenResponse
+)
+
+
+def login(
+    user_data: LoginRequest,
+    db: Session = Depends(get_db)
+):
+
+    user = (
+        db.query(User)
+        .filter(
+            User.email ==
+            user_data.email
+        )
+        .first()
+    )
+
+
+    if not user:
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+
+    password_valid = verify_password(
+        user_data.password,
+        user.hashed_password
+    )
+
+
+    if not password_valid:
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+
+    token = create_access_token(
+        {
+            "sub": str(user.id),
+            "username": user.username,
+            "role": user.role
+        }
+    )
+
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
+
+================================================================================
+FILE: backend\app\routes\deployments.py
+================================================================================
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException
+)
+
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+
+from app.database.models import Deployment
+
+from app.schemas.deployment import (
+    DeploymentCreate,
+    DeploymentResponse
+)
+
+from app.core.dependencies import get_current_user
+
+
+router = APIRouter(
+    prefix="/deployments",
+    tags=["Deployments"]
+)
+
+
+@router.post(
+    "/",
+    response_model=DeploymentResponse
+)
+def create_deployment(
+    deployment_data: DeploymentCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+
+    new_deployment = Deployment(
+        version=deployment_data.version,
+        environment=deployment_data.environment,
+        status=deployment_data.status.upper(),
+        commit_hash=deployment_data.commit_hash
+    )
+
+    db.add(new_deployment)
+
+    db.commit()
+
+    db.refresh(new_deployment)
+
+    return new_deployment
+
+
+@router.get(
+    "/",
+    response_model=list[DeploymentResponse]
+)
+def get_deployments(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+
+    deployments = (
+        db.query(Deployment)
+        .order_by(
+            Deployment.deployed_at.desc()
+        )
+        .limit(100)
+        .all()
+    )
+
+    return deployments
+
+
+@router.get(
+    "/{deployment_id}",
+    response_model=DeploymentResponse
+)
+def get_deployment(
+    deployment_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+
+    deployment = (
+        db.query(Deployment)
+        .filter(
+            Deployment.id == deployment_id
+        )
+        .first()
+    )
+
+    if not deployment:
+        raise HTTPException(
+            status_code=404,
+            detail="Deployment not found"
+        )
+
+    return deployment
+
+================================================================================
+FILE: backend\app\routes\logs.py
+================================================================================
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,Header
+)
+from app.core.agent_security import verify_agent_token
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+
+from app.database.models import (
+    Server,
+    ServerLog
+)
+
+from app.schemas.log import (
+    LogCreate,
+    LogResponse
+)
+
+
+router = APIRouter(
+    prefix="/logs",
+    tags=["Logs"]
+)
+
+@router.post(
+    "/",
+    response_model=LogResponse
+)
+def create_log(
+    log: LogCreate,
+    db: Session = Depends(get_db),
+     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token")
+):
+
+    verify_agent_token(log.server_id, x_agent_token, db)
+    
+    server = (
+        db.query(Server)
+        .filter(
+            Server.id == log.server_id
+        )
+        .first()
+    )
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    new_log = ServerLog(
+        server_id=log.server_id,
+        level=log.level.upper(),
+        message=log.message,
+        source=log.source
+    )
+
+    db.add(new_log)
+    db.commit()
+    db.refresh(new_log)
+
+    return new_log
+
+@router.get(
+    "/{server_id}",
+    response_model=list[LogResponse]
+)
+def get_server_logs(
+    server_id: int,
+    db: Session = Depends(get_db)
+):
+
+    server = (
+        db.query(Server)
+        .filter(
+            Server.id == server_id
+        )
+        .first()
+    )
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    logs = (
+        db.query(ServerLog)
+        .filter(
+            ServerLog.server_id == server_id
+        )
+        .order_by(
+            ServerLog.timestamp.desc()
+        )
+        .limit(200)
+        .all()
+    )
+
+    return logs
+
+@router.get(
+    "/{server_id}",
+    response_model=list[LogResponse]
+)
+def get_server_logs(
+    server_id: int,
+    level: str | None = Query(
+        default=None
+    ),
+    db: Session = Depends(get_db)
+):
+
+    server = (
+        db.query(Server)
+        .filter(
+            Server.id == server_id
+        )
+        .first()
+    )
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    query = (
+        db.query(ServerLog)
+        .filter(
+            ServerLog.server_id == server_id
+        )
+    )
+
+    if level:
+
+        query = query.filter(
+            ServerLog.level == level.upper()
+        )
+
+    logs = (
+        query
+        .order_by(
+            ServerLog.timestamp.desc()
+        )
+        .limit(200)
+        .all()
+    )
+
+    return logs
+
+================================================================================
+FILE: backend\app\routes\metrics.py
+================================================================================
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Header
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+from app.database.models import Server, ServerMetric
+from app.schemas.metric import MetricCreate, MetricResponse
+from app.services.websocket import manager
+from app.core.agent_security import verify_agent_token
+from app.core.dependencies import get_current_user
+
+
+router = APIRouter(
+    prefix="/metrics",
+    tags=["Metrics"]
+)
+
+@router.post("/", response_model=MetricResponse)
+async def create_metric(
+    metric: MetricCreate,
+    db: Session = Depends(get_db),
+    x_agent_token: str | None = Header( default= None, alias="X-Agent-Token")
+):
+
+    # Check whether server exists
+    server = db.query(Server).filter(
+        Server.id == metric.server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+    verify_agent_token(metric.server_id, x_agent_token,db)
+
+    heartbeat_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Create metric
+    new_metric = ServerMetric(
+        server_id=metric.server_id,
+        cpu_usage=metric.cpu_usage,
+        memory_usage=metric.memory_usage,
+        disk_usage=metric.disk_usage,
+        network_sent_mb=metric.network_sent_mb,
+        network_received_mb=metric.network_received_mb,
+        uptime_seconds=metric.uptime_seconds,
+        timestamp=heartbeat_at,
+    )
+
+    db.add(new_metric)
+
+    # Update server status
+    server.status = "online"
+    server.last_seen = heartbeat_at
+
+    db.commit()
+
+    db.refresh(new_metric)
+
+    await manager.broadcast(
+    {
+        "type": "metric_update",
+        "server_id": new_metric.server_id,
+        "metric": {
+            "id": new_metric.id,
+            "cpu_usage": new_metric.cpu_usage,
+            "memory_usage": new_metric.memory_usage,
+            "disk_usage": new_metric.disk_usage,
+            "network_sent_mb": new_metric.network_sent_mb,
+            "network_received_mb": new_metric.network_received_mb,
+            "uptime_seconds": new_metric.uptime_seconds,
+            "timestamp": new_metric.timestamp.isoformat()
+        }
+    }
+)
+
+    return new_metric
+
+
+@router.get("/{server_id}", response_model=list[MetricResponse])
+def get_server_metrics(
+    server_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(
+        get_current_user
+    )
+):
+    
+    # Check whether server exists
+    server = db.query(Server).filter(
+        Server.id == server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    metrics = (
+        db.query(ServerMetric)
+        .filter(ServerMetric.server_id == server_id)
+        .order_by(ServerMetric.timestamp.desc())
+        .limit(100)
+        .all()
+    )
+
+    return metrics
+
+================================================================================
+FILE: backend\app\routes\servers.py
+================================================================================
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
+from app.database.models import Server, User
+from app.schemas.server import ServerCreate, ServerResponse
+from app.core.dependencies import get_current_user
+
+
+router = APIRouter(
+    prefix="/servers",
+    tags=["Servers"]
+)
+
+HEARTBEAT_TIMEOUT = timedelta(seconds=30)
+
+
+def update_server_status(server: Server, now: datetime) -> None:
+    last_seen = server.last_seen
+
+    if last_seen is not None and last_seen.tzinfo is not None:
+        last_seen = last_seen.astimezone(timezone.utc).replace(tzinfo=None)
+
+    server.status = (
+        "online"
+        if last_seen is not None and last_seen >= now - HEARTBEAT_TIMEOUT
+        else "offline"
+    )
+
+
+@router.post("/", response_model=ServerResponse)
+def create_server(
+    server: ServerCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+    
+):
+    
+    new_server = Server(
+        name=server.name,
+        hostname=server.hostname,
+        ip_address=server.ip_address,
+        operating_system=server.operating_system
+    )
+
+    db.add(new_server)
+    db.commit()
+    db.refresh(new_server)
+
+    return new_server
+
+
+@router.get("/", response_model=list[ServerResponse])
+def get_servers(
+    db: Session = Depends(get_db)
+):
+    servers = db.query(Server).all()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for server in servers:
+        update_server_status(server, now)
+
+    return servers
+
+
+@router.get("/{server_id}", response_model=ServerResponse)
+def get_server(
+    server_id: int,
+    db: Session = Depends(get_db)
+):
+    server = db.query(Server).filter(
+        Server.id == server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    update_server_status(server, datetime.now(timezone.utc).replace(tzinfo=None))
+
+    return server
+
+
+@router.put("/{server_id}", response_model=ServerResponse)
+def update_server(
+    server_id: int,
+    server_data: ServerCreate,
+    db: Session = Depends(get_db)
+):
+    server = db.query(Server).filter(
+        Server.id == server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    server.name = server_data.name
+    server.hostname = server_data.hostname
+    server.ip_address = server_data.ip_address
+    server.operating_system = server_data.operating_system
+
+    db.commit()
+    db.refresh(server)
+
+    return server
+
+
+@router.delete("/{server_id}")
+def delete_server(
+    server_id: int,
+    db: Session = Depends(get_db)
+):
+    server = db.query(Server).filter(
+        Server.id == server_id
+    ).first()
+
+    if not server:
+        raise HTTPException(
+            status_code=404,
+            detail="Server not found"
+        )
+
+    db.delete(server)
+    db.commit()
+
+    return {
+        "message": "Server deleted successfully"
+    }
+
+================================================================================
+FILE: backend\app\schemas\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: backend\app\schemas\alert.py
+================================================================================
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class AlertResponse(BaseModel):
+    id: int
+    api_id: int | None
+    alert_type: str
+    message: str
+    severity: str
+    is_resolved: bool
+    created_at: datetime
+    resolved_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\schemas\api_monitor.py
+================================================================================
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class ApiCreate(BaseModel):
+    name: str
+    url: str
+    method: str = "GET"
+
+
+class ApiResponse(BaseModel):
+    id: int
+    name: str
+    url: str
+    method: str
+    status: str
+    last_status_code: int | None
+    last_response_time: float | None
+    last_checked: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class ApiCheckResponse(BaseModel):
+    id: int
+    api_id: int
+    status_code: int | None
+    response_time: float | None
+    status: str
+    error_message: str | None
+    checked_at: datetime
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\schemas\auth.py
+================================================================================
+from pydantic import BaseModel, EmailStr
+
+
+
+class UserCreate(BaseModel):
+
+    username: str
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+
+    id: int
+    username: str
+    email: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+
+class TokenResponse(BaseModel):
+
+    access_token: str
+    token_type: str
+
+class LoginRequest(BaseModel):
+
+    email: EmailStr
+    password: str
+
+================================================================================
+FILE: backend\app\schemas\deployment.py
+================================================================================
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class DeploymentCreate(BaseModel):
+    version: str
+    environment: str
+    status: str
+    commit_hash: str
+
+
+class DeploymentResponse(BaseModel):
+    id: int
+    version: str
+    environment: str
+    status: str
+    commit_hash: str
+    deployed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\schemas\log.py
+================================================================================
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class LogCreate(BaseModel):
+    server_id: int
+    level: str
+    message: str
+    source: str = "agent"
+
+
+class LogResponse(BaseModel):
+    id: int
+    server_id: int
+    level: str
+    message: str
+    source: str
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\schemas\metric.py
+================================================================================
+from pydantic import BaseModel
+from datetime import datetime
+
+
+class MetricCreate(BaseModel):
+    server_id: int
+    cpu_usage: float
+    memory_usage: float
+    disk_usage: float
+    network_sent_mb: float
+    network_received_mb: float
+    uptime_seconds: int
+
+
+class MetricResponse(BaseModel):
+    id: int
+    server_id: int
+    cpu_usage: float
+    memory_usage: float
+    disk_usage: float
+    network_sent_mb: float
+    network_received_mb: float
+    uptime_seconds: int
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\schemas\server.py
+================================================================================
+from pydantic import BaseModel
+
+class ServerCreate(BaseModel):
+    name: str
+    hostname: str
+    ip_address: str
+    operating_system: str
+
+class ServerResponse(BaseModel):
+    id: int
+    name: str
+    hostname: str
+    ip_address: str
+    operating_system: str
+    status: str
+
+    class Config:
+        from_attributes = True
+
+================================================================================
+FILE: backend\app\services\alert_service.py
+================================================================================
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from app.database.models import Alert
+
+
+def create_alert(
+    db: Session,
+    api_id: int,
+    alert_type: str,
+    message: str,
+    severity: str = "warning"
+):
+
+    existing_alert = (
+        db.query(Alert)
+        .filter(
+            Alert.api_id == api_id,
+            Alert.alert_type == alert_type,
+            Alert.is_resolved == False
+        )
+        .first()
+    )
+
+    if existing_alert:
+        return existing_alert
+
+    alert = Alert(
+        api_id=api_id,
+        alert_type=alert_type,
+        message=message,
+        severity=severity,
+        is_resolved=False
+    )
+
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+
+    return alert
+
+
+def resolve_alerts(
+    db: Session,
+    api_id: int
+):
+
+    alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.api_id == api_id,
+            Alert.is_resolved == False
+        )
+        .all()
+    )
+
+    for alert in alerts:
+
+        alert.is_resolved = True
+        alert.resolved_at = datetime.utcnow()
+
+    db.commit()
+
+================================================================================
+FILE: backend\app\services\api_monitor.py
+================================================================================
+import time
+import requests
+
+
+def check_api(url: str):
+
+    start_time = time.perf_counter()
+
+    try:
+
+        response = requests.get(
+            url,
+            timeout=5
+        )
+
+        end_time = time.perf_counter()
+
+        response_time = (
+            end_time - start_time
+        ) * 1000
+
+        if 200 <= response.status_code < 400:
+            status = "healthy"
+
+        else:
+            status = "unhealthy"
+
+        return {
+            "status_code": response.status_code,
+            "response_time": round(
+                response_time,
+                2
+            ),
+            "status": status,
+            "error_message": None
+        }
+
+    except requests.RequestException as error:
+
+        end_time = time.perf_counter()
+
+        response_time = (
+            end_time - start_time
+        ) * 1000
+
+        return {
+            "status_code": None,
+            "response_time": round(
+                response_time,
+                2
+            ),
+            "status": "down",
+            "error_message": str(error)
+        }
+
+================================================================================
+FILE: backend\app\services\monitor_scheduler.py
+================================================================================
+import asyncio
+
+from sqlalchemy.orm import Session
+
+from app.database.connection import SessionLocal
+
+from app.database.models import ApiEndpoint
+
+from app.services.api_monitor import check_api
+
+from app.services.alert_service import (
+    create_alert,
+    resolve_alerts
+)
+
+
+CHECK_INTERVAL = 30
+
+
+def monitor_all_apis():
+
+    db: Session = SessionLocal()
+
+    try:
+
+        apis = (
+            db.query(ApiEndpoint)
+            .all()
+        )
+
+        for api in apis:
+
+            result = check_api(api.url)
+
+            api.status = result["status"]
+
+            api.last_status_code = (
+                result["status_code"]
+            )
+
+            api.last_response_time = (
+                result["response_time"]
+            )
+
+            from datetime import datetime
+
+            api.last_checked = datetime.utcnow()
+
+            if result["status"] == "down":
+
+                create_alert(
+                    db=db,
+                    api_id=api.id,
+                    alert_type="api_down",
+                    message=f"{api.name} is down",
+                    severity="critical"
+                )
+
+            elif result["status"] == "unhealthy":
+
+                create_alert(
+                    db=db,
+                    api_id=api.id,
+                    alert_type="api_unhealthy",
+                    message=(
+                        f"{api.name} returned "
+                        f"status code "
+                        f"{result['status_code']}"
+                    ),
+                    severity="warning"
+                )
+
+            elif (
+                result["response_time"]
+                and result["response_time"] > 1000
+            ):
+
+                create_alert(
+                    db=db,
+                    api_id=api.id,
+                    alert_type="slow_api",
+                    message=(
+                        f"{api.name} response time "
+                        f"is {result['response_time']} ms"
+                    ),
+                    severity="warning"
+                )
+
+            else:
+
+                resolve_alerts(
+                    db=db,
+                    api_id=api.id
+                )
+
+        db.commit()
+
+    except Exception as error:
+
+        print(
+            "Monitoring error:",
+            error
+        )
+
+    finally:
+
+        db.close()
+
+
+async def monitoring_loop():
+
+    while True:
+
+        print(
+            "Running automatic API monitoring..."
+        )
+
+        await asyncio.to_thread(
+            monitor_all_apis
+        )
+
+        await asyncio.sleep(
+            CHECK_INTERVAL
+        )
+
+================================================================================
+FILE: backend\app\services\websocket.py
+================================================================================
+from fastapi import WebSocket
+
+
+class ConnectionManager:
+
+    def __init__(self):
+
+        self.active_connections = []
+
+
+    async def connect(
+        self,
+        websocket: WebSocket
+    ):
+
+        await websocket.accept()
+
+        self.active_connections.append(
+            websocket
+        )
+
+
+    def disconnect(
+        self,
+        websocket: WebSocket
+    ):
+
+        if websocket in self.active_connections:
+
+            self.active_connections.remove(
+                websocket
+            )
+
+
+    async def broadcast(
+        self,
+        message: dict
+    ):
+
+        for connection in self.active_connections:
+
+            try:
+
+                await connection.send_json(
+                    message
+                )
+
+            except Exception:
+
+                self.disconnect(connection)
+
+
+manager = ConnectionManager()
+
+================================================================================
+FILE: backend\requirements.txt
+================================================================================
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+bcrypt==4.3.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.0
+cryptography==50.0.2
+dnspython==2.8.0
+ecdsa==0.19.2
+email-validator==2.3.0
+fastapi==0.142.2
+h11==0.16.0
+httptools==0.8.0
+idna==3.20
+opentelemetry-api==1.45.0
+passlib==1.7.4
+psycopg==3.3.6
+psycopg-binary==3.3.6
+psycopg2-binary==2.9.13
+pyasn1==0.6.4
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+python-dotenv==1.2.4
+python-jose==3.5.0
+python-multipart==0.0.32
+PyYAML==6.0.3
+requests==2.34.2
+rsa==4.9.1
+six==1.17.0
+SQLAlchemy==2.1.3
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.5
+urllib3==2.8.0
+uvicorn==0.54.0
+watchfiles==1.3.0
+websockets==15.0.1
+
+================================================================================
+FILE: docker-compose.yml
+================================================================================
+services:
+
+  postgres:
+    image: postgres:16
+
+    container_name: serverwatch-postgres
+
+    environment:
+      POSTGRES_DB: serverwatch
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: [REDACTED]
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+  backend:
+    build:
+      context: ./backend
+
+    container_name: serverwatch-backend
+
+    environment:
+      DATABASE_URL: [REDACTED]
+      SECRET_KEY: [REDACTED]
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      - postgres
+
+
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: serverwatch-frontend
+
+    ports:
+      - "5173:80"
+
+    depends_on:
+      - backend
+
+
+volumes:
+  postgres_data:
+
+================================================================================
+FILE: frontend\eslint.config.js
+================================================================================
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      globals: globals.browser,
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  },
+])
+
+================================================================================
+FILE: frontend\index.html
+================================================================================
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+================================================================================
+FILE: frontend\package.json
+================================================================================
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.4",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.6",
+    "globals": "^17.12.0",
+    "vite": "^8.3.0"
+  }
+}
+
+================================================================================
+FILE: frontend\src\api\auth.js
+================================================================================
+export const logout = () => {
+
+    localStorage.removeItem(
+        "access_token"
+    );
+
+    window.location.href = "/login";
+};
+
+================================================================================
+FILE: frontend\src\api\serverApi.js
+================================================================================
+import axios from "axios";
+
+const API_URL = "http://localhost:8000"; // Replace with your backend API URL
+
+
+
+const api= axios.create({
+    baseURL: API_URL
+
+});
+
+api.interceptors.request.use(
+    (config) => {
+
+        const token =
+            localStorage.getItem(
+                "access_token"
+            );
+
+        if (token) {
+
+            config.headers.Authorization =
+                `Bearer ${token}`;
+
+        }
+
+        return config;
+    }
+);
+
+
+
+export const getServers = async () => {
+  try {
+    const response = await api.get(`${API_URL}/servers`);
+    return response.data;
+    } catch (error) {
+    console.error("Error fetching servers:", error);
+    throw error;
+    }
+};  
+
+export const getServerMetrics = async (serverId) => {
+    try {
+        const response = await api.get(
+            `${API_URL}/metrics/${serverId}`);
+        return response.data;
+    } catch (error) {
+        console.error("Error fetching server metrics:", error);
+        throw error;
+    }
+};
+
+export const getMonitoredApis = async () => {
+    const response = await api.get(
+        `${API_URL}/api-monitor/`
+    );
+
+    return response.data;
+};
+
+export const checkApi = async (apiId) => {
+    const response = await api.post(
+        `${API_URL}/api-monitor/${apiId}/check`
+    );
+
+    return response.data;
+};
+
+export const getApiHistory = async (apiId) => {
+    const response = await api.get(
+        `${API_URL}/api-monitor/${apiId}/history`
+    );
+
+    return response.data;
+};
+
+export const getActiveAlerts = async () => {
+
+    const response = await api.get(
+        `${API_URL}/alerts/active`
+    );
+
+    return response.data;
+};
+
+export const getServerLogs = async (
+    serverId,
+    level = ""
+) => {
+
+    let url =
+        `${API_URL}/logs/${serverId}`;
+
+    if (level) {
+        url += `?level=${level}`;
+    }
+
+    const response = await api.get(
+        url
+    );
+
+    return response.data;
+};
+
+export const registerUser = async (
+    userData
+) => {
+
+    const response = await api.post(
+        `${API_URL}/auth/register`,
+        userData
+    );
+
+    return response.data;
+};
+
+export const loginUser = async (
+    userData
+) => {
+
+    const response = await api.post(
+        `${API_URL}/auth/login`,
+        userData
+    );
+
+
+    return response.data;
+};
+
+
+export const getDeployments = async () => {
+
+    const response = await api.get(
+        "/deployments/"
+    );
+
+    return response.data;
+};
+
+export const createDeployment = async (
+    deploymentData
+) => {
+
+    const response = await api.post(
+        "/deployments/",
+        deploymentData
+    );
+
+    return response.data;
+};
+
+================================================================================
+FILE: frontend\src\api\websocket.js
+================================================================================
+const WS_URL = "ws://localhost:8000/ws";
+
+
+export const createWebSocket = (
+    onMessage,
+    onOpen,
+    onClose
+) => {
+
+    const socket = new WebSocket(
+        WS_URL
+    );
+
+
+    socket.onopen = () => {
+
+        console.log(
+            "WebSocket connected"
+        );
+
+        if (onOpen) {
+            onOpen();
+        }
+
+    };
+
+
+    socket.onmessage = (event) => {
+
+        const data = JSON.parse(
+            event.data
+        );
+
+        onMessage(data);
+
+    };
+
+
+    socket.onclose = () => {
+
+        console.log(
+            "WebSocket disconnected"
+        );
+
+        if (onClose) {
+            onClose();
+        }
+
+    };
+
+
+    socket.onerror = (error) => {
+
+        console.error(
+            "WebSocket error:",
+            error
+        );
+
+    };
+
+
+    return socket;
+};
+
+================================================================================
+FILE: frontend\src\App.jsx
+================================================================================
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Dashboard from "./components/Dashboard";
+import ServerDetails from "./pages/ServerDetails";
+import Login from "./pages/Login"
+import ProtectedRoute from "./components/ProtectedRoute";
+import DeploymentsPage from "./pages/DeploymentsPage";
+
+
+
+function App() {
+
+    return (
+        <BrowserRouter>
+            <Routes>                
+                <Route path="/login" element={<Login />} />
+                <Route path="/" element={
+                    <ProtectedRoute>
+                        <Dashboard />
+                    </ProtectedRoute>
+                } />
+                <Route path="/server/:serverId" element={
+                    <ProtectedRoute>
+                        <ServerDetails />
+                    </ProtectedRoute>
+                } />
+                <Route path="/deployments" element={
+                    <ProtectedRoute>
+                        <DeploymentsPage />
+                    </ProtectedRoute>
+                } />
+            
+            </Routes>
+        </BrowserRouter>
+    );
+}
+
+export default App;
+
+================================================================================
+FILE: frontend\src\components\AlertPanel.jsx
+================================================================================
+import { useEffect, useState } from "react";
+
+import {
+    getActiveAlerts
+} from "../api/serverApi";
+
+
+function AlertPanel() {
+
+    const [alerts, setAlerts] = useState([]);
+
+
+    const loadAlerts = async () => {
+
+        try {
+
+            const data =
+                await getActiveAlerts();
+
+            setAlerts(data);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load alerts:",
+                error
+            );
+
+        }
+    };
+
+
+    useEffect(() => {
+
+        loadAlerts();
+
+        const interval =
+            setInterval(
+                loadAlerts,
+                10000
+            );
+
+        return () => {
+            clearInterval(interval);
+        };
+
+    }, []);
+
+
+    return (
+        <div>
+
+            <h2>
+                Active Alerts
+            </h2>
+
+
+            {alerts.length === 0 ? (
+
+                <p>
+                    ðŸŸ¢ No active alerts
+                </p>
+
+            ) : (
+
+                <div>
+
+                    {alerts.map(
+                        (alert) => (
+
+                            <div
+                                key={alert.id}
+                            >
+
+                                <strong>
+
+                                    {alert.severity ===
+                                    "critical"
+                                        ? "ðŸ”´"
+                                        : "ðŸŸ "}
+
+                                    {" "}
+
+                                    {alert.message}
+
+                                </strong>
+
+                                <p>
+
+                                    Type:
+                                    {" "}
+                                    {alert.alert_type}
+
+                                </p>
+
+                                <p>
+
+                                    Created:
+                                    {" "}
+                                    {new Date(
+                                        alert.created_at
+                                    ).toLocaleString()}
+
+                                </p>
+
+                            </div>
+
+                        )
+                    )}
+
+                </div>
+
+            )}
+
+        </div>
+    );
+}
+
+
+export default AlertPanel;
+
+================================================================================
+FILE: frontend\src\components\ApiMonitor.jsx
+================================================================================
+import { useEffect, useState } from "react";
+
+import {
+    getMonitoredApis,
+    checkApi
+} from "../api/serverApi";
+
+
+function ApiMonitor() {
+
+    const [apis, setApis] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+
+    const loadApis = async () => {
+
+        try {
+
+            const data = await getMonitoredApis();
+
+            setApis(data);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load APIs:",
+                error
+            );
+
+        } finally {
+
+            setLoading(false);
+
+        }
+    };
+
+
+    const handleCheck = async (apiId) => {
+
+        try {
+
+            await checkApi(apiId);
+
+            await loadApis();
+
+        } catch (error) {
+
+            console.error(
+                "API check failed:",
+                error
+            );
+
+        }
+    };
+
+
+    useEffect(() => {
+
+        loadApis();
+
+    }, []);
+
+
+    if (loading) {
+        return <p>Loading APIs...</p>;
+    }
+
+
+    return (
+        <div>
+
+            <h2>
+                API Services
+            </h2>
+
+
+            {apis.length === 0 ? (
+
+                <p>
+                    No APIs are being monitored.
+                </p>
+
+            ) : (
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+
+                            <th>
+                                Name
+                            </th>
+
+                            <th>
+                                Status
+                            </th>
+
+                            <th>
+                                Status Code
+                            </th>
+
+                            <th>
+                                Response Time
+                            </th>
+
+                            <th>
+                                Action
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                        {apis.map((api) => (
+
+                            <tr key={api.id}>
+
+                                <td>
+                                    {api.name}
+                                </td>
+
+
+                                <td>
+
+                                    {api.status === "healthy"
+                                        ? "ðŸŸ¢ Healthy"
+                                        : api.status === "unhealthy"
+                                            ? "ðŸŸ  Unhealthy"
+                                            : api.status === "down"
+                                                ? "ðŸ”´ Down"
+                                                : "âšª Unknown"
+                                    }
+
+                                </td>
+
+
+                                <td>
+                                    {api.last_status_code ?? "---"}
+                                </td>
+
+
+                                <td>
+                                    {api.last_response_time !== null
+                                        ? `${api.last_response_time} ms`
+                                        : "---"
+                                    }
+                                </td>
+
+
+                                <td>
+
+                                    <button
+                                        onClick={() =>
+                                            handleCheck(api.id)
+                                        }
+                                    >
+                                        Check Now
+                                    </button>
+
+                                </td>
+
+                            </tr>
+
+                        ))}
+
+                    </tbody>
+
+                </table>
+
+            )}
+
+        </div>
+    );
+}
+
+
+export default ApiMonitor;
+
+================================================================================
+FILE: frontend\src\components\Dashboard.jsx
+================================================================================
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import ApiMonitor from "./ApiMonitor";
+import AlertPanel from "./AlertPanel";
+
+import { getServers, getServerMetrics } from "../api/serverApi";
+import { logout } from "../api/auth";
+
+
+function Dashboard() {
+
+    const [servers, setServers] = useState([]);
+    const [metrics, setMetrics] = useState({});
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+
+    useEffect(() => {
+
+        let refreshInProgress = false;
+
+        const loadDashboard = async () => {
+            if (refreshInProgress) {
+                return;
+            }
+
+            refreshInProgress = true;
+
+            try {
+                const serverData = await getServers();
+                setServers(serverData);
+
+                const metricsData = {};
+
+                for (const server of serverData) {
+                    const serverMetrics = await getServerMetrics(server.id);
+
+                    if (serverMetrics.length > 0) {
+                        metricsData[server.id] = serverMetrics[0];
+                    }
+                }
+
+                setMetrics(metricsData);
+                setError(null);
+            } catch (error) {
+                console.error(error);
+                setError("Unable to load dashboard data.");
+            } finally {
+                setLoading(false);
+                refreshInProgress = false;
+            }
+        };
+
+        void loadDashboard();
+
+        const refreshInterval = window.setInterval(() => {
+            void loadDashboard();
+        }, 5000);
+
+        return () => window.clearInterval(refreshInterval);
+
+    }, []);
+
+
+    if (loading) {
+
+        return (
+            <h2>
+                Loading ServerWatch...
+            </h2>
+        );
+
+    }
+
+
+    if (error) {
+
+        return (
+            <h2>
+                {error}
+            </h2>
+        );
+
+    }
+    const totalServers = servers.length;
+
+    const onlineServers = servers.filter(
+        (server) => server.status === "online"
+    ).length;
+
+    const offlineServers =
+        totalServers - onlineServers;
+
+    return (
+
+        <div>
+
+            <h1>
+                ServerWatch
+            </h1>
+            <div>
+
+    <h3>
+        Total Servers: {totalServers}
+    </h3>
+
+    <h3>
+        Online: {onlineServers}
+    </h3>
+
+    <h3>
+        Offline: {offlineServers}
+    </h3>
+
+</div>
+<button
+    onClick={logout}
+>
+    Logout
+</button>
+            <p>
+                Mini DevOps Control Center
+            </p>
+
+
+            <h2>
+                Servers
+            </h2>
+
+
+            {servers.length === 0 ? (
+
+                <p>
+                    No servers found.
+                </p>
+
+            ) : (
+
+                servers.map((server) => {
+
+                    const metric =
+                        metrics[server.id];
+
+
+                    return (
+
+                        <div key={server.id}>
+
+                            <h3>
+                                <Link to={`/server/${server.id}`}>
+        {server.name}
+    </Link>
+
+                            </h3>
+
+
+                            <p>
+                                Status:
+                                {" "}
+                                {server.status}
+                            </p>
+
+
+                            <p>
+                                Hostname:
+                                {" "}
+                                {server.hostname}
+                            </p>
+
+
+                            <p>
+                                IP:
+                                {" "}
+                                {server.ip_address}
+                            </p>
+
+
+                            {metric ? (
+
+                                <div>
+
+                                    <p>
+                                        CPU:
+                                        {" "}
+                                        {metric.cpu_usage}%
+                                    </p>
+
+                                    <p>
+                                        Memory:
+                                        {" "}
+                                        {metric.memory_usage}%
+                                    </p>
+
+                                    <p>
+                                        Disk:
+                                        {" "}
+                                        {metric.disk_usage}%
+                                    </p>
+
+                                </div>
+
+                            ) : (
+
+                                <p>
+                                    No metrics available.
+                                </p>
+
+                            )}
+                            
+                            <hr />
+
+                            <AlertPanel />
+                            
+                            {/* API monitoring */}  
+                            <ApiMonitor />
+                            <Link to="/deployments">
+                                 Deployment History
+                            </Link>
+
+                        </div>
+
+                    );
+
+                })
+
+            )}
+
+        </div>
+
+    );
+}
+
+
+export default Dashboard;
+
+================================================================================
+FILE: frontend\src\components\Deployments.jsx
+================================================================================
+import { useEffect, useState } from "react";
+
+import {
+    getDeployments,
+    createDeployment
+} from "../api/serverApi";
+
+
+function Deployments() {
+
+    const [deployments, setDeployments] =
+        useState([]);
+
+    const [version, setVersion] =
+        useState("");
+
+    const [environment, setEnvironment] =
+        useState("production");
+
+    const [status, setStatus] =
+        useState("SUCCESS");
+
+    const [commitHash, setCommitHash] =
+        useState("");
+
+    const [error, setError] =
+        useState("");
+
+
+    const loadDeployments = async () => {
+
+        try {
+
+            const data =
+                await getDeployments();
+
+            setDeployments(data);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load deployments:",
+                error
+            );
+
+            setError(
+                "Failed to load deployments"
+            );
+        }
+    };
+
+
+    useEffect(() => {
+
+        loadDeployments();
+
+    }, []);
+
+
+    const handleSubmit = async (
+        event
+    ) => {
+
+        event.preventDefault();
+
+        setError("");
+
+        try {
+
+            await createDeployment({
+                version,
+                environment,
+                status,
+                commit_hash: commitHash
+            });
+
+            setVersion("");
+            setCommitHash("");
+
+            await loadDeployments();
+
+        } catch (error) {
+
+            console.error(
+                "Failed to create deployment:",
+                error
+            );
+
+            setError(
+                error.response?.data?.detail ||
+                "Failed to create deployment"
+            );
+        }
+    };
+
+
+    return (
+        <div>
+
+            <h1>
+                Deployment History
+            </h1>
+
+
+            <form
+                onSubmit={handleSubmit}
+            >
+
+                <div>
+
+                    <label>
+                        Version
+                    </label>
+
+                    <input
+                        type="text"
+                        placeholder="v1.3.0"
+                        value={version}
+                        onChange={(event) =>
+                            setVersion(
+                                event.target.value
+                            )
+                        }
+                        required
+                    />
+
+                </div>
+
+
+                <div>
+
+                    <label>
+                        Environment
+                    </label>
+
+                    <select
+                        value={environment}
+                        onChange={(event) =>
+                            setEnvironment(
+                                event.target.value
+                            )
+                        }
+                    >
+
+                        <option value="production">
+                            Production
+                        </option>
+
+                        <option value="staging">
+                            Staging
+                        </option>
+
+                        <option value="development">
+                            Development
+                        </option>
+
+                    </select>
+
+                </div>
+
+
+                <div>
+
+                    <label>
+                        Status
+                    </label>
+
+                    <select
+                        value={status}
+                        onChange={(event) =>
+                            setStatus(
+                                event.target.value
+                            )
+                        }
+                    >
+
+                        <option value="SUCCESS">
+                            SUCCESS
+                        </option>
+
+                        <option value="FAILED">
+                            FAILED
+                        </option>
+
+                    </select>
+
+                </div>
+
+
+                <div>
+
+                    <label>
+                        Commit Hash
+                    </label>
+
+                    <input
+                        type="text"
+                        placeholder="a82f91c"
+                        value={commitHash}
+                        onChange={(event) =>
+                            setCommitHash(
+                                event.target.value
+                            )
+                        }
+                        required
+                    />
+
+                </div>
+
+
+                {error && (
+                    <p>
+                        {error}
+                    </p>
+                )}
+
+
+                <button type="submit">
+                    Record Deployment
+                </button>
+
+            </form>
+
+
+            <hr />
+
+
+            <table>
+
+                <thead>
+
+                    <tr>
+
+                        <th>
+                            Version
+                        </th>
+
+                        <th>
+                            Environment
+                        </th>
+
+                        <th>
+                            Status
+                        </th>
+
+                        <th>
+                            Commit
+                        </th>
+
+                        <th>
+                            Deployed At
+                        </th>
+
+                    </tr>
+
+                </thead>
+
+
+                <tbody>
+
+                    {deployments.map(
+                        (deployment) => (
+
+                            <tr
+                                key={
+                                    deployment.id
+                                }
+                            >
+
+                                <td>
+                                    {
+                                        deployment.version
+                                    }
+                                </td>
+
+                                <td>
+                                    {
+                                        deployment.environment
+                                    }
+                                </td>
+
+                                <td>
+                                    {
+                                        deployment.status
+                                    }
+                                </td>
+
+                                <td>
+                                    {
+                                        deployment.commit_hash
+                                    }
+                                </td>
+
+                                <td>
+                                    {new Date(
+                                        deployment.deployed_at
+                                    ).toLocaleString()}
+                                </td>
+
+                            </tr>
+
+                        )
+                    )}
+
+                </tbody>
+
+            </table>
+
+        </div>
+    );
+}
+
+
+export default Deployments;
+
+================================================================================
+FILE: frontend\src\components\LogViewer.jsx
+================================================================================
+import { useEffect, useState } from "react";
+
+import {
+    getServerLogs
+} from "../api/serverApi";
+
+
+function LogViewer({ serverId }) {
+
+    const [logs, setLogs] = useState([]);
+
+    const [level, setLevel] = useState("");
+
+
+    const loadLogs = async () => {
+
+        try {
+
+            const data =
+                await getServerLogs(
+                    serverId,
+                    level
+                );
+
+            setLogs(data);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load logs:",
+                error
+            );
+
+        }
+    };
+
+
+    useEffect(() => {
+
+        loadLogs();
+
+    }, [serverId, level]);
+
+
+    return (
+        <div>
+
+            <h2>
+                Server Logs
+            </h2>
+
+
+            <div>
+
+                <label>
+                    Filter:
+                </label>
+
+                <select
+                    value={level}
+                    onChange={(event) =>
+                        setLevel(
+                            event.target.value
+                        )
+                    }
+                >
+
+                    <option value="">
+                        All
+                    </option>
+
+                    <option value="INFO">
+                        INFO
+                    </option>
+
+                    <option value="WARNING">
+                        WARNING
+                    </option>
+
+                    <option value="ERROR">
+                        ERROR
+                    </option>
+
+                </select>
+
+            </div>
+
+
+            <br />
+
+
+            {logs.length === 0 ? (
+
+                <p>
+                    No logs found.
+                </p>
+
+            ) : (
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+
+                            <th>
+                                Time
+                            </th>
+
+                            <th>
+                                Level
+                            </th>
+
+                            <th>
+                                Source
+                            </th>
+
+                            <th>
+                                Message
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                        {logs.map(
+                            (log) => (
+
+                                <tr
+                                    key={log.id}
+                                >
+
+                                    <td>
+
+                                        {new Date(
+                                            log.timestamp
+                                        ).toLocaleString()}
+
+                                    </td>
+
+
+                                    <td>
+
+                                        {log.level === "ERROR"
+                                            ? "ðŸ”´ ERROR"
+                                            : log.level === "WARNING"
+                                                ? "ðŸŸ  WARNING"
+                                                : "ðŸ”µ INFO"
+                                        }
+
+                                    </td>
+
+
+                                    <td>
+                                        {log.source}
+                                    </td>
+
+
+                                    <td>
+                                        {log.message}
+                                    </td>
+
+                                </tr>
+
+                            )
+                        )}
+
+                    </tbody>
+
+                </table>
+
+            )}
+        
+
+        </div>
+    );
+}
+
+
+export default LogViewer;
+
+================================================================================
+FILE: frontend\src\components\PerformanceChart.jsx
+================================================================================
+import {
+    LineChart,
+    Line,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+    Legend,
+    ResponsiveContainer
+} from "recharts";
+
+
+function PerformanceChart({ metrics }) {
+
+    const chartData = [...metrics]
+        .reverse()
+        .map((metric) => ({
+
+            time: new Date(
+                metric.timestamp
+            ).toLocaleTimeString(),
+
+            cpu: metric.cpu_usage,
+
+            memory: metric.memory_usage,
+
+            disk: metric.disk_usage
+
+        }));
+
+
+    return (
+
+        <ResponsiveContainer
+            width="100%"
+            height={350}
+        >
+
+            <LineChart data={chartData}>
+
+                <CartesianGrid
+                    strokeDasharray="3 3"
+                />
+
+                <XAxis
+                    dataKey="time"
+                />
+
+                <YAxis
+                    domain={[0, 100]}
+                />
+
+                <Tooltip />
+
+                <Legend />
+
+                <Line
+                    type="monotone"
+                    dataKey="cpu"
+                    name="CPU %"
+                />
+
+                <Line
+                    type="monotone"
+                    dataKey="memory"
+                    name="Memory %"
+                />
+
+                <Line
+                    type="monotone"
+                    dataKey="disk"
+                    name="Disk %"
+                />
+
+            </LineChart>
+
+        </ResponsiveContainer>
+
+    );
+
+}
+
+
+export default PerformanceChart;
+
+================================================================================
+FILE: frontend\src\components\ProtectedRoute.jsx
+================================================================================
+import { Navigate } from "react-router-dom";
+
+
+function ProtectedRoute({
+    children
+}) {
+
+    const token =
+        localStorage.getItem(
+            "access_token"
+        );
+
+
+    if (!token) {
+
+        return (
+            <Navigate
+                to="/login"
+                replace
+            />
+        );
+
+    }
+
+
+    return children;
+}
+
+
+export default ProtectedRoute;
+
+================================================================================
+FILE: frontend\src\main.jsx
+================================================================================
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+================================================================================
+FILE: frontend\src\pages\DeploymentsPage.jsx
+================================================================================
+import Deployments from "../components/Deployments";
+
+
+function DeploymentsPage() {
+
+    return (
+        <Deployments />
+    );
+}
+
+
+export default DeploymentsPage;
+
+================================================================================
+FILE: frontend\src\pages\Login.jsx
+================================================================================
+import { useState } from "react";
+
+import { useNavigate } from "react-router-dom";
+
+import {
+    loginUser
+} from "../api/serverApi";
+
+
+function Login() {
+
+    const navigate = useNavigate();
+
+    const [email, setEmail] =
+        useState("");
+
+    const [password, setPassword] =
+        useState("");
+
+    const [error, setError] =
+        useState("");
+
+
+    const handleLogin = async (
+        event
+    ) => {
+
+        event.preventDefault();
+
+        setError("");
+
+
+        try {
+
+            const data =
+                await loginUser({
+                    email,
+                    password
+                });
+
+
+            localStorage.setItem(
+                "access_token",
+                data.access_token
+            );
+
+
+            navigate("/");
+
+        } catch (error) {
+
+            setError(
+                error.response?.data?.detail ||
+                "Login failed"
+            );
+
+        }
+    };
+
+
+    return (
+        <div>
+
+            <h1>
+                ServerWatch Login
+            </h1>
+
+
+            <form
+                onSubmit={handleLogin}
+            >
+
+                <div>
+
+                    <label>
+                        Email
+                    </label>
+
+                    <input
+                        type="email"
+                        value={email}
+                        onChange={(event) =>
+                            setEmail(
+                                event.target.value
+                            )
+                        }
+                        required
+                    />
+
+                </div>
+
+
+                <div>
+
+                    <label>
+                        Password
+                    </label>
+
+                    <input
+                        type="password"
+                        value={password}
+                        onChange={(event) =>
+                            setPassword(
+                                event.target.value
+                            )
+                        }
+                        required
+                    />
+
+                </div>
+
+
+                {error && (
+
+                    <p>
+                        {error}
+                    </p>
+
+                )}
+
+
+                <button type="submit">
+
+                    Login
+
+                </button>
+
+            </form>
+
+        </div>
+    );
+}
+
+
+export default Login;
+
+================================================================================
+FILE: frontend\src\pages\ServerDetails.jsx
+================================================================================
+import { useEffect, useState } from "react";
+import { useParams, Link } from "react-router-dom";
+import PerformanceChart from "../components/PerformanceChart";
+import { formatUptime } from "../utils/formateUptime";
+
+
+import { getServers, getServerMetrics } from "../api/serverApi";
+import {createWebSocket} from "../api/websocket";
+
+
+function ServerDetails() {
+
+    const { serverId } = useParams();
+
+    const [server, setServer] = useState(null);
+    const [metrics, setMetrics] = useState([]);
+
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+
+    useEffect(() => {
+
+        loadServerDetails();
+
+    }, [serverId]);
+
+    useEffect(() => {
+
+    const socket = createWebSocket(
+        (data) => {
+
+            if (
+                data.type === "metric_update" &&
+                data.server_id === Number(serverId)
+            ) {
+
+                setMetrics((previousMetrics) => {
+
+                    return [
+                        data.metric,
+                        ...previousMetrics
+                    ].slice(0, 100);
+
+                });
+
+            }
+
+        }
+    );
+
+
+    return () => {
+
+        socket.close();
+
+    };
+
+}, [serverId]);
+
+    const loadServerDetails = async () => {
+
+        try {
+
+            const servers = await getServers();
+
+            const selectedServer = servers.find(
+                (server) =>
+                    server.id === Number(serverId)
+            );
+
+
+            if (!selectedServer) {
+
+                setError("Server not found.");
+
+                return;
+
+            }
+
+
+            setServer(selectedServer);
+
+
+            const serverMetrics =
+                await getServerMetrics(
+                    Number(serverId)
+                );
+
+
+            setMetrics(serverMetrics);
+
+        } catch (error) {
+
+            console.error(error);
+
+            setError(
+                "Unable to load server details."
+            );
+
+        } finally {
+
+            setLoading(false);
+
+        }
+    };
+
+
+    if (loading) {
+
+        return (
+            <h2>
+                Loading server details...
+            </h2>
+        );
+
+    }
+
+
+    if (error) {
+
+        return (
+            <div>
+
+                <h2>
+                    {error}
+                </h2>
+
+                <Link to="/">
+                    Back to Dashboard
+                </Link>
+
+            </div>
+        );
+
+    }
+
+
+    if (!server) {
+
+        return (
+            <h2>
+                Server not found.
+            </h2>
+        );
+
+    }
+
+
+    const latestMetric =
+        metrics.length > 0
+            ? metrics[0]
+            : null;
+
+
+    return (
+
+        <div>
+
+            <Link to="/">
+                â† Back to Dashboard
+            </Link>
+
+
+            <h1>
+                {server.name}
+            </h1>
+
+
+            <p>
+                Status: {server.status}
+            </p>
+
+
+            <p>
+                Hostname: {server.hostname}
+            </p>
+
+
+            <p>
+                IP Address: {server.ip_address}
+            </p>
+
+
+            <p>
+                Operating System:
+                {" "}
+                {server.operating_system}
+            </p>
+
+
+            <h2>
+                Current Performance
+            </h2>
+
+
+            {latestMetric ? (
+
+                <div>
+
+                    <p>
+                        CPU:
+                        {" "}
+                        {latestMetric.cpu_usage}%
+                    </p>
+
+                    <p>
+                        Memory:
+                        {" "}
+                        {latestMetric.memory_usage}%
+                    </p>
+
+                    <p>
+                        Disk:
+                        {" "}
+                        {latestMetric.disk_usage}%
+                    </p>
+
+                    <p>
+                        Network Sent:
+                        {" "}
+                        {latestMetric.network_sent_mb}
+                        {" "}MB
+                    </p>
+
+                    <p>
+                        Network Received:
+                        {" "}
+                        {latestMetric.network_received_mb}
+                        {" "}MB
+                    </p>
+
+                    <p>
+    Uptime:
+    {" "}
+    {formatUptime(
+        latestMetric.uptime_seconds
+    )}
+</p>
+                </div>
+
+            ) : (
+
+                <p>
+                    No monitoring data available.
+                </p>
+
+            )}
+
+
+            <h2>
+                Metric History
+            </h2>
+            {metrics.length > 0 && (
+
+    <div>
+
+        <h2>
+            Performance History
+        </h2>
+
+        <PerformanceChart
+            metrics={metrics}
+        />
+
+    </div>
+
+)}
+
+            {metrics.length === 0 ? (
+
+                <p>
+                    No historical metrics available.
+                </p>
+
+            ) : (
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+
+                            <th>
+                                Time
+                            </th>
+
+                            <th>
+                                CPU
+                            </th>
+
+                            <th>
+                                Memory
+                            </th>
+
+                            <th>
+                                Disk
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                        {metrics.map((metric) => (
+
+                            <tr key={metric.id}>
+
+                                <td>
+                                    {new Date(
+                                        metric.timestamp
+                                    ).toLocaleTimeString()}
+                                </td>
+
+                                <td>
+                                    {metric.cpu_usage}%
+                                </td>
+
+                                <td>
+                                    {metric.memory_usage}%
+                                </td>
+
+                                <td>
+                                    {metric.disk_usage}%
+                                </td>
+
+                            </tr>
+
+                        ))}
+
+                    </tbody>
+
+                </table>
+
+            )}
+
+        </div>
+
+    );
+}
+
+
+export default ServerDetails;
+
+================================================================================
+FILE: frontend\src\utils\formateUptime.js
+================================================================================
+export function formatUptime(totalSeconds) {
+
+    const days = Math.floor(
+        totalSeconds / 86400
+    );
+
+    totalSeconds %= 86400;
+
+
+    const hours = Math.floor(
+        totalSeconds / 3600
+    );
+
+    totalSeconds %= 3600;
+
+
+    const minutes = Math.floor(
+        totalSeconds / 60
+    );
+
+
+    return `${days} days, ${hours} hours, ${minutes} minutes`;
+}
+
+================================================================================
+FILE: frontend\vite.config.js
+================================================================================
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+

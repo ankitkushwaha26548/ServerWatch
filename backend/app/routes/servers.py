@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,21 @@ router = APIRouter(
     prefix="/servers",
     tags=["Servers"]
 )
+
+HEARTBEAT_TIMEOUT = timedelta(seconds=30)
+
+
+def update_server_status(server: Server, now: datetime) -> None:
+    last_seen = server.last_seen
+
+    if last_seen is not None and last_seen.tzinfo is not None:
+        last_seen = last_seen.astimezone(timezone.utc).replace(tzinfo=None)
+
+    server.status = (
+        "online"
+        if last_seen is not None and last_seen >= now - HEARTBEAT_TIMEOUT
+        else "offline"
+    )
 
 
 @router.post("/", response_model=ServerResponse)
@@ -40,6 +57,10 @@ def get_servers(
     db: Session = Depends(get_db)
 ):
     servers = db.query(Server).all()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for server in servers:
+        update_server_status(server, now)
 
     return servers
 
@@ -58,6 +79,8 @@ def get_server(
             status_code=404,
             detail="Server not found"
         )
+
+    update_server_status(server, datetime.now(timezone.utc).replace(tzinfo=None))
 
     return server
 
