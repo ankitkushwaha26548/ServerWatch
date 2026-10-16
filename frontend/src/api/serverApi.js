@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_URL = "http://localhost:8000"; // Replace with your backend API URL
+const API_URL = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`;
 
 
 
@@ -32,7 +32,7 @@ api.interceptors.request.use(
 
 export const getServers = async () => {
   try {
-    const response = await api.get(`${API_URL}/servers`);
+    const response = await api.get("/servers/");
     return response.data;
     } catch (error) {
     console.error("Error fetching servers:", error);
@@ -43,7 +43,7 @@ export const getServers = async () => {
 export const getServerMetrics = async (serverId) => {
     try {
         const response = await api.get(
-            `${API_URL}/metrics/${serverId}`);
+            `/metrics/${serverId}`);
         return response.data;
     } catch (error) {
         console.error("Error fetching server metrics:", error);
@@ -53,7 +53,7 @@ export const getServerMetrics = async (serverId) => {
 
 export const getMonitoredApis = async () => {
     const response = await api.get(
-        `${API_URL}/api-monitor/`
+        "/api-monitor/"
     );
 
     return response.data;
@@ -61,7 +61,7 @@ export const getMonitoredApis = async () => {
 
 export const checkApi = async (apiId) => {
     const response = await api.post(
-        `${API_URL}/api-monitor/${apiId}/check`
+        `/api-monitor/${apiId}/check`
     );
 
     return response.data;
@@ -69,7 +69,7 @@ export const checkApi = async (apiId) => {
 
 export const getApiHistory = async (apiId) => {
     const response = await api.get(
-        `${API_URL}/api-monitor/${apiId}/history`
+        `/api-monitor/${apiId}/history`
     );
 
     return response.data;
@@ -78,7 +78,7 @@ export const getApiHistory = async (apiId) => {
 export const getActiveAlerts = async () => {
 
     const response = await api.get(
-        `${API_URL}/alerts/active`
+        "/alerts/active"
     );
 
     return response.data;
@@ -90,10 +90,10 @@ export const getServerLogs = async (
 ) => {
 
     let url =
-        `${API_URL}/logs/${serverId}`;
+        `/logs/${serverId}`;
 
     if (level) {
-        url += `?level=${level}`;
+        url += `?level=${encodeURIComponent(level)}`;
     }
 
     const response = await api.get(
@@ -147,5 +147,12 @@ export const createDeployment = async (
         deploymentData
     );
 
+    return response.data;
+};
+
+export const verifyEmail = async (token) => {
+    const response = await api.get(
+        `/auth/verify-email?token=${encodeURIComponent(token)}`
+    );
     return response.data;
 };

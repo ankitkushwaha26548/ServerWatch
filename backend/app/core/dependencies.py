@@ -60,10 +60,18 @@ def get_current_user(
         )
 
 
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token"
+        )
+
     user = (
         db.query(User)
         .filter(
-            User.id == int(user_id)
+            User.id == user_id
         )
         .first()
     )

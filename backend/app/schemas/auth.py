@@ -15,6 +15,7 @@ class UserResponse(BaseModel):
     username: str
     email: str
     role: str
+    email_verified: bool
 
     class Config:
         from_attributes = True
@@ -29,3 +30,7 @@ class LoginRequest(BaseModel):
 
     email: EmailStr
     password: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr

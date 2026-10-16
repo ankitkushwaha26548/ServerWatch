@@ -2,13 +2,14 @@ import time
 import requests
 
 
-def check_api(url: str):
+def check_api(url: str, method: str = "GET"):
 
     start_time = time.perf_counter()
 
     try:
 
-        response = requests.get(
+        response = requests.request(
+            method.upper(),
             url,
             timeout=5
         )

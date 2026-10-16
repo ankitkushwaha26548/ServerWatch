@@ -37,7 +37,8 @@ router = APIRouter(
 )
 def create_api(
     api: ApiCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
 ):
 
     new_api = ApiEndpoint(
@@ -79,7 +80,8 @@ def get_apis(
 )
 def check_monitored_api(
     api_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
 ):
 
     api = (
@@ -96,7 +98,7 @@ def check_monitored_api(
             detail="API endpoint not found"
         )
 
-    result = check_api(api.url)
+    result = check_api(api.url, api.method)
 
     new_check = ApiCheck(
         api_id=api.id,
@@ -125,7 +127,8 @@ def check_monitored_api(
 )
 def get_api_history(
     api_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
 ):
 
     api = (

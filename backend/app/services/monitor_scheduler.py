@@ -30,7 +30,7 @@ def monitor_all_apis():
 
         for api in apis:
 
-            result = check_api(api.url)
+            result = check_api(api.url, api.method)
 
             api.status = result["status"]
 

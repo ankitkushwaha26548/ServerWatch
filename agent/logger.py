@@ -20,12 +20,12 @@ def send_log(
     try:
 
         response = requests.post(
-        f"{API_URL}/logs/",
-        json=payload,
-        headers={"X-Agent-Token": AGENT_TOKEN},
-        timeout=5
-    )
-        
+            f"{API_URL}/logs/",
+            json=payload,
+            headers={"X-Agent-Token": AGENT_TOKEN} if AGENT_TOKEN else {},
+            timeout=5
+        )
+
         response.raise_for_status()
 
         return response.json()

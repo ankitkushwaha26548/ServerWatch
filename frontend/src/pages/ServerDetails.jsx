@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps */
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import PerformanceChart from "../components/PerformanceChart";
@@ -6,6 +7,8 @@ import { formatUptime } from "../utils/formateUptime";
 
 import { getServers, getServerMetrics } from "../api/serverApi";
 import {createWebSocket} from "../api/websocket";
+import LogViewer from "../components/LogViewer";
+import { Shell } from "../components/Dashboard";
 
 
 function ServerDetails() {
@@ -155,7 +158,8 @@ function ServerDetails() {
 
     return (
 
-        <div>
+        <Shell>
+        <div className="detail-page">
 
             <Link to="/">
                 ← Back to Dashboard
@@ -336,8 +340,10 @@ function ServerDetails() {
 
             )}
 
-        </div>
+            <LogViewer serverId={Number(serverId)} />
 
+        </div>
+        </Shell>
     );
 }
 

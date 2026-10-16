@@ -19,10 +19,8 @@ HEARTBEAT_TIMEOUT = timedelta(seconds=30)
 
 def update_server_status(server: Server, now: datetime) -> None:
     last_seen = server.last_seen
-
     if last_seen is not None and last_seen.tzinfo is not None:
         last_seen = last_seen.astimezone(timezone.utc).replace(tzinfo=None)
-
     server.status = (
         "online"
         if last_seen is not None and last_seen >= now - HEARTBEAT_TIMEOUT
@@ -57,8 +55,7 @@ def get_servers(
     db: Session = Depends(get_db)
 ):
     servers = db.query(Server).all()
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-
+    now = datetime.utcnow()
     for server in servers:
         update_server_status(server, now)
 
@@ -80,8 +77,7 @@ def get_server(
             detail="Server not found"
         )
 
-    update_server_status(server, datetime.now(timezone.utc).replace(tzinfo=None))
-
+    update_server_status(server, datetime.utcnow())
     return server
 
 
@@ -133,3 +129,4 @@ def delete_server(
     return {
         "message": "Server deleted successfully"
     }
+from datetime import datetime, timedelta, timezone

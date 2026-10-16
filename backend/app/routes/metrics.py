@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
@@ -7,8 +7,8 @@ from app.database.connection import get_db
 from app.database.models import Server, ServerMetric
 from app.schemas.metric import MetricCreate, MetricResponse
 from app.services.websocket import manager
-from app.core.agent_security import verify_agent_token
 from app.core.dependencies import get_current_user
+from app.core.agent_security import verify_agent_token
 
 
 router = APIRouter(
@@ -20,7 +20,7 @@ router = APIRouter(
 async def create_metric(
     metric: MetricCreate,
     db: Session = Depends(get_db),
-    x_agent_token: str | None = Header( default= None, alias="X-Agent-Token")
+    x_agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
 ):
 
     # Check whether server exists
@@ -33,11 +33,11 @@ async def create_metric(
             status_code=404,
             detail="Server not found"
         )
-    verify_agent_token(metric.server_id, x_agent_token,db)
 
-    heartbeat_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    verify_agent_token(metric.server_id, x_agent_token, db)
 
     # Create metric
+    heartbeat_at = datetime.utcnow()
     new_metric = ServerMetric(
         server_id=metric.server_id,
         cpu_usage=metric.cpu_usage,

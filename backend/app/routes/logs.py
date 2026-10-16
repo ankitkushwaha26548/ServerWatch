@@ -2,9 +2,10 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Query,Header
+    Query,
+    Header
 )
-from app.core.agent_security import verify_agent_token
+
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
@@ -18,6 +19,7 @@ from app.schemas.log import (
     LogCreate,
     LogResponse
 )
+from app.core.agent_security import verify_agent_token
 
 
 router = APIRouter(
@@ -32,11 +34,11 @@ router = APIRouter(
 def create_log(
     log: LogCreate,
     db: Session = Depends(get_db),
-     x_agent_token: str | None = Header(default=None, alias="X-Agent-Token")
+    x_agent_token: str | None = Header(default=None, alias="X-Agent-Token")
 ):
 
     verify_agent_token(log.server_id, x_agent_token, db)
-    
+
     server = (
         db.query(Server)
         .filter(
@@ -63,43 +65,6 @@ def create_log(
     db.refresh(new_log)
 
     return new_log
-
-@router.get(
-    "/{server_id}",
-    response_model=list[LogResponse]
-)
-def get_server_logs(
-    server_id: int,
-    db: Session = Depends(get_db)
-):
-
-    server = (
-        db.query(Server)
-        .filter(
-            Server.id == server_id
-        )
-        .first()
-    )
-
-    if not server:
-        raise HTTPException(
-            status_code=404,
-            detail="Server not found"
-        )
-
-    logs = (
-        db.query(ServerLog)
-        .filter(
-            ServerLog.server_id == server_id
-        )
-        .order_by(
-            ServerLog.timestamp.desc()
-        )
-        .limit(200)
-        .all()
-    )
-
-    return logs
 
 @router.get(
     "/{server_id}",

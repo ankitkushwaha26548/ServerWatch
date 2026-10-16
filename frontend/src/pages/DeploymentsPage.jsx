@@ -1,11 +1,10 @@
 import Deployments from "../components/Deployments";
+import { Shell } from "../components/Dashboard";
 
 
 function DeploymentsPage() {
 
-    return (
-        <Deployments />
-    );
+    return <Shell active="deployments"><Deployments /></Shell>;
 }
 
 

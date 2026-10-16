@@ -21,6 +21,9 @@ services:
     build:
       context: ./backend
 
+    env_file:
+      - ./backend/.env
+
     container_name: serverwatch-backend
 
     environment:

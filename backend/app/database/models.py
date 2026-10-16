@@ -257,6 +257,22 @@ class User(Base):
         nullable=False
     )
 
+    email_verified = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    verification_token_hash = Column(
+        String,
+        nullable=True
+    )
+
+    verification_token_expires_at = Column(
+        DateTime,
+        nullable=True
+    )
+
     is_active = Column(
         Boolean,
         default=True
@@ -302,17 +318,11 @@ class Deployment(Base):
         index=True
     )
 
+
 class ServerAgentCredential(Base):
     __tablename__ = "server_agent_credentials"
 
     id = Column(Integer, primary_key=True, index=True)
-    server_id = Column(
-        Integer,
-        ForeignKey("servers.id"),
-        unique=True,
-        nullable=False,
-        index=True,
-    )
+    server_id = Column(Integer, ForeignKey("servers.id"), unique=True, nullable=False, index=True)
     token_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
